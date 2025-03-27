@@ -5,7 +5,8 @@ import {
   Vector3,
   Object3D,
   MathUtils,
-  IcosahedronGeometry
+  IcosahedronGeometry,
+  Raycaster
 } from 'three';
 import * as CANNON from 'cannon-es';
 
@@ -14,6 +15,8 @@ export default class SimpleBall extends Object3D {
     super();
     this.radius = radius;
     this.physicsWorld = physicsWorld;
+    this.onGround = false;
+    this.jumpCooldown = 0;
     
     // Create the visual representation - low-poly style to match the main Ball
     const geometry = new IcosahedronGeometry(radius, 1);
@@ -55,6 +58,56 @@ export default class SimpleBall extends Object3D {
     
     // Initial position sync
     this.position.copy(startPosition);
+
+    // Add ground detection
+    this.setupGroundDetection();
+  }
+  
+  setupGroundDetection() {
+    // Create raycaster for ground detection
+    this.raycaster = new Raycaster();
+    this.downDirection = new Vector3(0, -1, 0);
+  }
+  
+  checkGround() {
+    if (!this.raycaster) return false;
+    
+    // Start raycast from slightly above the ball to avoid self-intersection
+    const rayStart = this.position.clone();
+    rayStart.y += 0.1;
+    
+    // Set raycaster
+    this.raycaster.set(rayStart, this.downDirection);
+    
+    // Find all objects in the scene
+    const intersects = this.raycaster.intersectObjects(
+      this.parent?.children || [], 
+      true
+    );
+    
+    // Check if we hit something within radius + small buffer distance
+    const groundDistance = this.radius + 0.3;
+    return intersects.length > 0 && intersects[0].distance < groundDistance;
+  }
+  
+  jump() {
+    if (!this.body || this.jumpCooldown > 0) return;
+    
+    // Only jump if the ball is on or near the ground
+    if (this.onGround) {
+      // Apply an upward impulse
+      const jumpForce = 60;
+      this.body.applyImpulse(
+        new CANNON.Vec3(0, jumpForce, 0),
+        new CANNON.Vec3(0, 0, 0)
+      );
+      
+      // Set the ball as no longer on the ground
+      this.onGround = false;
+      
+      // Set a cooldown to prevent jump spamming
+      this.jumpCooldown = 0.3; // seconds
+    }
   }
   
   applyForce(force) {
@@ -70,10 +123,18 @@ export default class SimpleBall extends Object3D {
   update(dt, inputDirection) {
     if (!this.body) return;
     
+    // Update jump cooldown
+    if (this.jumpCooldown > 0) {
+      this.jumpCooldown -= dt;
+    }
+    
+    // Check if ball is on ground
+    this.onGround = this.checkGround();
+    
     // Apply player input
     if (inputDirection.lengthSq() > 0) {
       // Calculate force based on input direction
-      const forceMultiplier = 15; // Use same multiplier as main Ball
+      const forceMultiplier = 60; // Increased from 15 to 40 for more responsive movement
       
       const force = new Vector3(
         inputDirection.x * forceMultiplier, 
@@ -91,7 +152,7 @@ export default class SimpleBall extends Object3D {
       this.body.velocity.z
     );
     const horizontalSpeed = horizontalVelocity.length();
-    const maxSpeed = 30; // Same as main Ball
+    const maxSpeed = 35; // Increased from 30 to 35 to allow for faster movement
     
     if (horizontalSpeed > maxSpeed) {
       const scale = maxSpeed / horizontalSpeed;

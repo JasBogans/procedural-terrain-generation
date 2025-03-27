@@ -9,6 +9,12 @@ export default class SimpleScene {
     this.sharedCamera = sharedCamera;
     this.active = false;
 
+    // Enable shadows for the renderer when this scene is active
+    if (this.renderer) {
+      this.renderer.shadowMap.enabled = true;
+      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
+
     // Set up scene fog and background
     this.scene.fog = new THREE.Fog(0x87CEEB, 200, 500);
     this.scene.background = new THREE.Color(0x87CEEB);
@@ -26,6 +32,10 @@ export default class SimpleScene {
     this.ball = new SimpleBall(2, this.physicsWorld);
     this.scene.add(this.ball);
     
+    // Create sun and clouds
+    this.createSun();
+    this.createClouds();
+    
     // Set up input listeners
     this.setupInputListeners();
     
@@ -41,8 +51,8 @@ export default class SimpleScene {
   createVisuals() {
     // Create ground plane visual
     const groundGeometry = new THREE.BoxGeometry(100, 1, 100);
-    const groundMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x7CFC00, // Light green
+    const groundMaterial = new THREE.MeshStandardMaterial({  // grass
+      color: 0x228B22,
       roughness: 0.7,
       metalness: 0.1
     });
@@ -59,6 +69,121 @@ export default class SimpleScene {
     
     // Create lights
     this.createLights();
+  }
+  
+  createSun() {
+    // Create a bright sun sphere
+    const sunGeometry = new THREE.SphereGeometry(10, 32, 32);
+    const sunMaterial = new THREE.MeshBasicMaterial({
+      color: 0xFFFFA0,
+      transparent: true,
+      opacity: 0.8
+    });
+    
+    this.sun = new THREE.Mesh(sunGeometry, sunMaterial);
+    this.sun.position.set(50, 100, 50);
+    this.scene.add(this.sun);
+    
+    // Add a glow effect using a larger sphere
+    const glowGeometry = new THREE.SphereGeometry(12, 32, 32);
+    const glowMaterial = new THREE.MeshBasicMaterial({
+      color: 0xFFFFA0,
+      transparent: true,
+      opacity: 0.4,
+      side: THREE.BackSide
+    });
+    
+    const glow = new THREE.Mesh(glowGeometry, glowMaterial);
+    this.sun.add(glow);
+    
+    // Add a sun light (directional light that casts shadows)
+    const sunLight = new THREE.DirectionalLight(0xFFFFCC, 2.0);
+    sunLight.position.copy(this.sun.position);
+    sunLight.castShadow = true;
+    
+    // Configure shadow properties for better quality
+    sunLight.shadow.mapSize.width = 2048;
+    sunLight.shadow.mapSize.height = 2048;
+    sunLight.shadow.camera.near = 10;
+    sunLight.shadow.camera.far = 200;
+    sunLight.shadow.camera.left = -50;
+    sunLight.shadow.camera.right = 50;
+    sunLight.shadow.camera.top = 50;
+    sunLight.shadow.camera.bottom = -50;
+    
+    this.scene.add(sunLight);
+    this.sunLight = sunLight;
+  }
+  
+  createClouds() {
+    // Create a container for all clouds
+    this.cloudsContainer = new THREE.Group();
+    this.scene.add(this.cloudsContainer);
+    
+    // Material for clouds - soft white
+    const cloudMaterial = new THREE.MeshStandardMaterial({
+      color: 0xFFFFFF,
+      transparent: true,
+      opacity: 0.9,
+      roughness: 1.0,
+      metalness: 0.0
+    });
+    
+    // Create 100 clouds scattered in the sky
+    for (let i = 0; i < 100; i++) {
+      // Create a cloud using multiple spheres grouped together
+      const cloud = new THREE.Group();
+      
+      // Random position in the sky
+      const x = THREE.MathUtils.randFloat(-400, 400);
+      const y = THREE.MathUtils.randFloat(50, 150);
+      const z = THREE.MathUtils.randFloat(-400, 400);
+      
+      // Random rotation
+      const rotation = THREE.MathUtils.randFloat(0, Math.PI * 2);
+      
+      // Random scale for the cloud
+      const cloudScale = THREE.MathUtils.randFloat(1, 4);
+      
+      // Create 3-7 spheres per cloud with varying sizes
+      const numSpheres = THREE.MathUtils.randInt(3, 7);
+      
+      for (let j = 0; j < numSpheres; j++) {
+        // Low-poly sphere for better performance
+        const sphereGeometry = new THREE.IcosahedronGeometry(
+          THREE.MathUtils.randFloat(2, 5), 
+          1  // Low subdivision level for performance
+        );
+        
+        const sphere = new THREE.Mesh(sphereGeometry, cloudMaterial);
+        
+        // Position spheres relative to each other to form a cloud
+        const offsetX = THREE.MathUtils.randFloat(-3, 3);
+        const offsetY = THREE.MathUtils.randFloat(-1, 1);
+        const offsetZ = THREE.MathUtils.randFloat(-3, 3);
+        
+        sphere.position.set(offsetX, offsetY, offsetZ);
+        
+        // Random individual scale
+        const sphereScale = THREE.MathUtils.randFloat(0.8, 1.2);
+        sphere.scale.set(sphereScale, sphereScale, sphereScale);
+        
+        cloud.add(sphere);
+      }
+      
+      // Apply transformations to the whole cloud
+      cloud.position.set(x, y, z);
+      cloud.rotation.y = rotation;
+      cloud.scale.set(cloudScale, cloudScale, cloudScale);
+      
+      // Store initial position for animation
+      cloud.userData = {
+        initialX: x,
+        speed: THREE.MathUtils.randFloat(0.1, 0.5) // Random speed for movement
+      };
+      
+      this.cloudsContainer.add(cloud);
+    }
   }
   
   createRamps() {
@@ -147,22 +272,15 @@ export default class SimpleScene {
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
     this.scene.add(ambientLight);
     
-    // Directional light (sun)
-    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-    directionalLight.position.set(50, 200, 100);
-    directionalLight.castShadow = true;
+    // Additional hemisphere light for better overall illumination
+    const hemisphereLight = new THREE.HemisphereLight(
+      0x87CEEB,  // Sky color
+      0x7CFC00,  // Ground color
+      0.6        // Intensity
+    );
+    this.scene.add(hemisphereLight);
     
-    // Configure shadow properties
-    directionalLight.shadow.mapSize.width = 1024;
-    directionalLight.shadow.mapSize.height = 1024;
-    directionalLight.shadow.camera.near = 10;
-    directionalLight.shadow.camera.far = 500;
-    directionalLight.shadow.camera.left = -100;
-    directionalLight.shadow.camera.right = 100;
-    directionalLight.shadow.camera.top = 100;
-    directionalLight.shadow.camera.bottom = -100;
-    
-    this.scene.add(directionalLight);
+    // Note: Main directional sun light is created in createSun method
   }
   
   setupInputListeners() {
@@ -186,6 +304,11 @@ export default class SimpleScene {
         case 'KeyD':
         case 'ArrowRight':
           this.inputDirection.x = -1;
+          break;
+        case 'Space': // Add jump with spacebar
+          if (this.ball) {
+            this.ball.jump();
+          }
           break;
         case 'KeyR': // Reset ball position
           this.ball.reset();
@@ -222,6 +345,7 @@ export default class SimpleScene {
       <div class="instruction-panel">
         <h3>Simple Ball Physics</h3>
         <p>Use arrow keys or WASD to push the ball around.</p>
+        <p>Press Space to jump.</p>
         <p>Press R to reset ball position.</p>
       </div>
     `;
@@ -297,6 +421,35 @@ export default class SimpleScene {
     
     // Update ball
     this.ball.update(deltaTime, this.inputDirection);
+    
+    // Update clouds - gentle drifting motion
+    if (this.cloudsContainer) {
+      this.cloudsContainer.children.forEach(cloud => {
+        // Move clouds slowly across the sky
+        cloud.position.x += cloud.userData.speed * deltaTime;
+        
+        // If a cloud goes too far, wrap around to the other side
+        if (cloud.position.x > 500) {
+          cloud.position.x = -500;
+        }
+      });
+    }
+    
+    // Rotate the sun very slowly around the scene
+    if (this.sun) {
+      const rotationSpeed = 0.05; // degrees per second
+      this.sun.position.x = 50 * Math.cos(deltaTime * rotationSpeed + this.sun.userData?.angle || 0);
+      this.sun.position.z = 50 * Math.sin(deltaTime * rotationSpeed + this.sun.userData?.angle || 0);
+      
+      // Save current angle
+      if (!this.sun.userData) this.sun.userData = {};
+      this.sun.userData.angle = (this.sun.userData.angle || 0) + deltaTime * rotationSpeed;
+      
+      // Update sunlight position to match sun
+      if (this.sunLight) {
+        this.sunLight.position.copy(this.sun.position);
+      }
+    }
     
     // Update camera
     this.updateCamera(deltaTime);
