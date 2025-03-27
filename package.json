@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "alea": "^1.0.1",
+    "cannon-es": "^0.20.0",
     "gsap": "^3.12.3",
     "lil-gui": "^0.19.1",
     "simplex-noise": "^4.0.1",

@@ -1,242 +1,211 @@
-import { Vector2, Vector3 } from 'three'
-import Chunk from './chunk'
-import { createNoise2D } from 'simplex-noise'
-const _V = new Vector2(0, 0)
-const isMobile = window.innerWidth < 768
+import { Vector2, Vector3 } from 'three';
+import Chunk from './chunk';
+import { createNoise2D } from 'simplex-noise';
+
+const _V = new Vector2(0, 0);
+const isMobile = window.innerWidth < 768;
 
 export default class ChunkManager {
-	chunks = {}
-	chunkKeys = []
-	items = []
-	lastChunkVisited = null
-	pool = []
-	maxDistance = isMobile ? 4 : 5
+  chunks = {};
+  chunkKeys = [];
+  lastChunkVisited = null;
+  pool = [];
+  maxDistance = isMobile ? 3 : 4; // Reduced distance for better performance
+  activePhysicsChunks = new Set();
 
-	constructor(chunkSize, camera, params, scene, uniforms, assets) {
-		this.params = params
-		this.camera = camera
-		this.chunkSize = chunkSize
-		this.scene = scene
-		this.uniforms = uniforms
-		this.assets = assets
+  constructor(chunkSize, target, params, scene, uniforms, assets, physicsWorld = null) {
+    this.params = params;
+    this.target = target; // The ball
+    this.chunkSize = chunkSize;
+    this.scene = scene;
+    this.uniforms = uniforms;
+    this.assets = assets;
+    this.physicsWorld = physicsWorld;
 
-		this.noise = []
-		for (let i = 0; i < params.octaves; i++) {
-			this.noise[i] = createNoise2D()
-		}
+    // Create noise functions for terrain generation
+    this.noise = [];
+    for (let i = 0; i < params.octaves; i++) {
+      this.noise[i] = createNoise2D();
+    }
 
-		this.init()
-	}
+    this.init();
+  }
 
-	init() {
-		const [i, j] = this.getCoordsByCamera()
-		this.updateChunks()
-	}
+  init() {
+    const [i, j] = this.getCoordsByTarget();
+    this.updateChunks();
+  }
 
-	getLODbyCoords(k, w) {
-		const [i, j] = this.getCoordsByCamera()
+  getLODbyCoords(k, w) {
+    const [i, j] = this.getCoordsByTarget();
+    // Faster LOD falloff for stylized terrain
+    return Math.floor(_V.set(k - i, w - j).length() * 0.9);
+  }
 
-		return Math.floor(_V.set(k - i, w - j).length() * 0.7)
-	}
+  isOutOfRange(k, w, [i, j]) {
+    const distance = _V.set(k - i, w - j).length();
+    return distance > this.maxDistance;
+  }
 
-	isOutOfRange(k, w, [i, j]) {
-		// const [i, j] = this.getCoordsByCamera()
-		const distance = _V.set(k - i, w - j).length()
+  createChunk(i, j, LOD) {
+    LOD = LOD || this.params.LOD;
 
-		return distance > this.maxDistance
-	}
+    if (this.chunks[`${i}|${j}`] === undefined) {
+      const position = new Vector3(i + 0.5, 0, j + 0.5);
+      position.multiplyScalar(this.chunkSize);
+      const chunk = new Chunk(
+        this.chunkSize,
+        this.noise,
+        this.params,
+        LOD,
+        position,
+        this.uniforms,
+        this.assets
+      );
+      chunk.coords = [i, j];
+      this.chunks[`${i}|${j}`] = chunk;
+      this.chunkKeys.push(`${i}|${j}`);
+      this.scene.add(chunk);
+      
+      // Add physics for close chunks
+      if (this.physicsWorld && LOD <= 1) {
+        this.physicsWorld.addHeightfieldFromChunk(chunk);
+        this.activePhysicsChunks.add(`${i}|${j}`);
+      }
+    }
+  }
 
-	lookForDistantChunks() {
-		const [i, j] = this.getCoordsByCamera()
-		const keys = []
-		const validKeys = []
+  async updateChunks() {
+    const [i, j] = this.getCoordsByTarget();
 
-		for (const key of this.chunkKeys) {
-			const chunk = this.chunks[key]
-			const [k, w] = chunk.coords
+    // Sort by distance for efficient updates
+    this.pool.sort((a, b) => {
+      const aL = Math.sqrt((a.coords?.[0] - i) ** 2 + (a.coords?.[1] - j) ** 2);
+      const bL = Math.sqrt((b.coords?.[0] - i) ** 2 + (b.coords?.[1] - j) ** 2);
+      return bL - aL;
+    });
 
-			if (this.isOutOfRange(k, w, [i, j])) {
-				keys.push(key)
-			} else {
-				validKeys.push(key)
-				const LOD = this.getLODbyCoords(k, w)
+    let count = 0;
 
-				const indexOf = this.pool.findIndex((el) => el.id === key)
-				const newEl = {
-					id: key,
-					LOD: LOD,
-					coords: [k, w],
-					callback: () => chunk.updateLOD(LOD),
-				}
-				if (indexOf >= 0) {
-					this.pool[indexOf] = newEl
-				} else {
-					this.pool.push(newEl)
-				}
-			}
-		}
+    const currentChunkKey = `${i}|${j}`;
+    if (currentChunkKey === this.lastChunkVisited) {
+      // Process a few chunks each frame to maintain performance
+      for (let g = 0; g < (isMobile ? 1 : 2); g++) {
+        const { callback, LOD } = this.pool.pop() || {};
+        if (callback) {
+          callback();
+        }
 
-		this.chunkKeys = validKeys
-		// console.log(validKeys)
+        count++;
 
-		// keys.forEach((key) => {
-		// 	const chunk = this.chunks[key]
-		// 	if (chunk === undefined) return
+        if (LOD <= 1 && count === 1) {
+          break;
+        }
+      }
 
-		// 	this.pool.push({
-		// 		id: key,
-		// 		LOD: 100,
-		// 		coords: [0, 0],
-		// 		callback: () => chunk.dispose(),
-		// 	})
+      return;
+    } else {
+      this.lastChunkVisited = currentChunkKey;
+    }
 
-		// 	// delete this.chunks[key]
-		// })
+    // Queue chunk updates in a radius around the player
+    for (let k = i - this.maxDistance + 1; k <= i + this.maxDistance + 1; k++) {
+      for (
+        let w = j - this.maxDistance + 1;
+        w <= j + this.maxDistance + 1;
+        w++
+      ) {
+        const key = `${k}|${w}`;
+        const chunk = this.chunks[key];
 
-		this.pool = this.pool.filter((el) => !keys.includes(el.key))
-	}
+        if (this.isOutOfRange(k, w, [i, j])) {
+          if (chunk) {
+            // Remove physics before disposing chunk
+            if (this.activePhysicsChunks.has(key) && this.physicsWorld) {
+              this.physicsWorld.removeHeightfield(chunk);
+              this.activePhysicsChunks.delete(key);
+            }
+            this.disposeChunk(chunk, key);
+          }
+          continue;
+        }
 
-	createChunk(i, j, LOD) {
-		LOD = LOD || this.params.LOD
+        _V.set(k - i, w - j);
+        const LOD = this.getLODbyCoords(k, w);
 
-		if (this.chunks[`${i}|${j}`] === undefined) {
-			const position = new Vector3(i + 0.5, 0, j + 0.5)
-			position.multiplyScalar(this.chunkSize)
-			const chunk = new Chunk(
-				this.chunkSize,
-				this.noise,
-				this.params,
-				LOD,
-				position,
-				this.uniforms,
-				this.assets
-			)
-			chunk.coords = [i, j]
-			this.chunks[`${i}|${j}`] = chunk
-			this.chunkKeys.push(`${i}|${j}`)
-			this.scene.add(chunk)
-		}
-	}
+        const indexOf = this.pool.findIndex((el) => el.id === key);
+        let el;
 
-	async updateChunks() {
-		const [i, j] = this.getCoordsByCamera()
+        if (chunk === undefined) {
+          el = {
+            key,
+            coords: [k, w],
+            LOD,
+            callback: () => this.createChunk(k, w, LOD),
+          };
+        } else {
+          el = {
+            id: key,
+            LOD: LOD,
+            coords: [k, w],
+            callback: () => {
+              chunk.updateLOD(LOD);
+              // Update physics for this chunk if needed
+              if (LOD <= 1 && !this.activePhysicsChunks.has(key) && this.physicsWorld) {
+                this.physicsWorld.addHeightfieldFromChunk(chunk);
+                this.activePhysicsChunks.add(key);
+              }
+            },
+          };
+        }
 
-		this.pool.sort((a, b) => {
-			const aL = Math.sqrt((a.coords[0] - i) ** 2 + (a.coords[1] - j) ** 2)
-			const bL = Math.sqrt((b.coords[0] - i) ** 2 + (b.coords[1] - j) ** 2)
-			return bL - aL
-		})
+        if (indexOf >= 0) {
+          this.pool[indexOf] = el;
+        } else {
+          this.pool.push(el);
+        }
+      }
+    }
+  }
 
-		let count = 0
+  disposeChunk(chunk, key) {
+    chunk.dispose();
+    this.chunks[key] = undefined;
+    this.chunkKeys = this.chunkKeys.filter(k => k !== key);
+  }
 
-		const currentChunkKey = `${i}|${j}`
-		if (currentChunkKey === this.lastChunkVisited) {
-			for (let g = 0; g < (isMobile ? 2 : 3); g++) {
-				const { callback, LOD } = this.pool.pop() || {}
-				if (callback) {
-					callback()
-				}
+  onParamsChange(LOD) {
+    for (const key in this.chunks) {
+      const chunk = this.chunks[key];
+      if (!chunk) continue;
+      
+      if (LOD) {
+        this.pool.push({
+          coords: [0, 0],
+          callback: () => chunk.updateLOD(LOD),
+        });
+      } else {
+        this.pool.push({
+          coords: [0, 0],
+          callback: () => {
+            chunk.updateGeometry();
+            // Update physics body if necessary
+            if (this.activePhysicsChunks.has(key) && this.physicsWorld) {
+              this.physicsWorld.removeHeightfield(chunk);
+              this.physicsWorld.addHeightfieldFromChunk(chunk);
+            }
+          },
+        });
+      }
+    }
+  }
 
-				count++
+  getCoordsByTarget() {
+    // Use target position (ball) to determine which chunks to load
+    const [x, , z] = this.target.position;
+    const i = Math.floor(x / this.chunkSize);
+    const j = Math.floor(z / this.chunkSize);
 
-				if (LOD <= 1 && count === 1) {
-					break
-				}
-			}
-
-			return
-		} else {
-			// console.log('new chunk')
-			this.lastChunkVisited = currentChunkKey
-		}
-
-		for (let k = i - this.maxDistance + 1; k <= i + this.maxDistance + 1; k++) {
-			for (
-				let w = j - this.maxDistance + 1;
-				w <= j + this.maxDistance + 1;
-				w++
-			) {
-				const key = `${k}|${w}`
-				const chunk = this.chunks[key]
-
-				if (this.isOutOfRange(k, w, [i, j])) {
-					if (chunk) {
-						// console.log('dispose')
-						this.disposeChunk(chunk, key)
-					}
-					continue
-				}
-
-				_V.set(k - i, w - j)
-				const LOD = this.getLODbyCoords(k, w)
-
-				const indexOf = this.pool.findIndex((el) => el.id === key)
-				// const inPool = this.pool.findIndex((el) => el.key === key)
-				// if (inPool >= 0) {
-				// 	this.pool.splice(inPool, 1)
-				// }
-				let el
-
-				if (chunk === undefined) {
-					// this.createChunk(k, w, LOD)
-					el = {
-						key,
-						coords: [k, w],
-						LOD,
-						callback: () => this.createChunk(k, w, LOD),
-					}
-
-					// this.createChunk(k, w, LOD)
-				} else {
-					// const indexOf = this.pool.findIndex((el) => el.id === key)
-					el = {
-						id: key,
-						LOD: LOD,
-						coords: [k, w],
-						callback: () => chunk.updateLOD(LOD),
-					}
-				}
-
-				if (indexOf >= 0) {
-					this.pool[indexOf] = el
-				} else {
-					this.pool.push(el)
-				}
-			}
-		}
-
-		// this.lookForDistantChunks()
-	}
-
-	disposeChunk(chunk, key) {
-		chunk.dispose()
-		// delete this.chunks[key]
-		this.chunks[key] = undefined
-	}
-
-	onParamsChange(LOD) {
-		for (const key in this.chunks) {
-			const chunk = this.chunks[key]
-			if (LOD) {
-				// chunk.updateLOD(LOD)
-				this.pool.push({
-					coords: [0, 0],
-					callback: () => chunk.updateLOD(LOD),
-				})
-			} else {
-				this.pool.push({
-					coords: [0, 0],
-					callback: () => chunk.updateGeometry(),
-				})
-			}
-		}
-	}
-
-	getCoordsByCamera() {
-		const [x, , z] = this.camera.position
-		const i = Math.floor(x / this.chunkSize)
-		const j = Math.floor(z / this.chunkSize)
-
-		return [i, j]
-	}
+    return [i, j];
+  }
 }
