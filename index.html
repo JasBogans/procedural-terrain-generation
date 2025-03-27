@@ -7,6 +7,12 @@
 		<title>Infinite Procedural World</title>
 	</head>
 	<body style="background-color: #000000">
+		<!-- Scene selection buttons -->
+		<div id="scene-selector" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 flex gap-4">
+			<button id="scene1-btn" class="px-4 py-2 bg-white text-black rounded-lg shadow-lg hover:bg-violet-400 transition-colors font-bold">Mountain Scene</button>
+			<button id="scene2-btn" class="px-4 py-2 bg-white text-black rounded-lg shadow-lg hover:bg-violet-400 transition-colors font-bold">Simple Ball Scene</button>
+		</div>
+
 		<div
 			id="loader"
 			style="opacity: 0"
@@ -40,6 +46,12 @@
 				</svg>
 			</span>
 		</div>
+
+		<!-- Instructions for the simple ball scene -->
+		<div id="simple-ball-instructions" class="fixed top-20 left-1/2 -translate-x-1/2 bg-black bg-opacity-70 text-white p-4 rounded-lg z-50 text-center hidden">
+			Use arrow keys or WASD to move the ball
+		</div>
+
 		<span
 			class="fixed rounded-full flex justify-center items-center w-10 bg-white hover:bg-violet-300 bottom-8 right-8 z-50 cursor-pointer aspect-square"
 			id="sound-toggle"

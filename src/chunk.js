@@ -5,17 +5,19 @@ import {
 	PlaneGeometry,
 	Vector3,
 	DoubleSide,
+	Color
   } from 'three';
   import { getHeight } from './heightGenerator';
   import Trees from './trees';
   
   // Stylized material with flat shading for low-poly look
-  const material = new MeshStandardMaterial({
-	color: 0x8BC34A, // Base grass green color
-	flatShading: true, 
-	side: DoubleSide,
-	roughness: 0.8,
-	metalness: 0.1
+  // Use a function to create the material to ensure unique instances
+  const createMaterial = () => new MeshStandardMaterial({
+    color: 0x8BC34A, // Base grass green color
+    flatShading: true, 
+    side: DoubleSide,
+    roughness: 0.8,
+    metalness: 0.1
   });
   
   // Very minimal terrain curvature - reduced for mountain focus
@@ -41,6 +43,9 @@ import {
 	  const geometry = new PlaneGeometry(size, size, segments, segments);
 	  geometry.rotateX(-Math.PI * 0.5);
   
+	  // Create a unique material instance for each chunk
+	  const material = createMaterial();
+  
 	  super(geometry, material);
   
 	  this.position.copy(position);
@@ -59,6 +64,7 @@ import {
 	dispose() {
 	  this.parent?.remove(this);
 	  this.geometry?.dispose();
+	  if (this.material) this.material.dispose();
 	  if (this.trees) {
 		this.trees.dispose();
 	  }
@@ -125,77 +131,71 @@ import {
 		  `
 		);
   
-		// Color assignment based on height and position - matching mountain terrain
+		// Color assignment based on height and position - optimized for mountain terrain
 		shader.fragmentShader = shader.fragmentShader.replace(
 		  '#include <color_fragment>',
 		  `
 		  // Height-based coloring
-		  float height = wPosition.y;
-		  
-		  // Path detection
-		  float pathX = 0.7071;
-		  float pathZ = 0.7071;
-		  float pathDist = abs((wPosition.x * pathZ - wPosition.z * pathX)) * 0.02;
-		  float pathMask = min(1.0, pathDist * 8.0);
-		  
-		  // Distance from center for mountain effect
-		  float distFromCenter = length(wPosition.xz) * 0.002;
-		  
-		  // Enhanced colors for better appearance
-		  vec3 snowTop = vec3(0.95, 0.95, 0.98);      // Snow caps
-		  vec3 mountainTop = vec3(0.85, 0.8, 0.7);    // Tan mountain top
-		  vec3 mountainMid = vec3(0.6, 0.55, 0.4);    // Darker mid mountain 
-		  vec3 grassColor = vec3(0.45, 0.62, 0.25);   // Rich grass green
-		  vec3 lowerGrassColor = vec3(0.5, 0.65, 0.3); // Lighter grass for lower areas
-		  vec3 pathColor = vec3(0.85, 0.75, 0.55);    // Sandy path
-		  
-		  // Choose color based on height and path
-		  vec3 terrainColor;
-		  
-		  if (pathMask < 0.5) {
-			// Path color with slight variation
-			terrainColor = pathColor;
-		  } 
-		  else if (height > 45.0) {
-			// Snow caps on the highest peaks
-			terrainColor = snowTop;
-		  }
-		  else if (height > 30.0) {
-			// Mountain top - blend to snow
-			float blend = smoothstep(30.0, 45.0, height);
-			terrainColor = mix(mountainTop, snowTop, blend);
-		  } 
-		  else if (height > 15.0) {
-			// Mountain sides - blend between top and mid
-			float blend = smoothstep(15.0, 30.0, height);
-			terrainColor = mix(mountainMid, mountainTop, blend);
-		  }
-		  else if (height > 5.0) {
-			// Lower mountain to grass transition
-			float blend = smoothstep(5.0, 15.0, height);
-			terrainColor = mix(grassColor, mountainMid, blend);
-		  }
-		  else {
-			// Grass areas with variation based on height for visual interest
-			float blend = smoothstep(0.0, 5.0, height);
-			terrainColor = mix(lowerGrassColor, grassColor, blend);
+			float height = wPosition.y;
 			
-			// Add some subtle noise variation to grass
-			terrainColor *= (0.9 + 0.2 * sin(wPosition.x * 0.1) * sin(wPosition.z * 0.1));
-		  }
-		  
-		  // Assign the color
-		  diffuseColor.rgb = terrainColor;
-		  
-		  // Add very minimal distance fog - blue sky color
-		  diffuseColor.rgb = mix(
-			vec3(0.6, 0.8, 0.95), // Sky blue fog
-			diffuseColor.rgb, 
-			smoothstep(900.0, 300.0, distanceFromCamera)
-		  );
+			// Path detection
+			float pathX = 0.7071;
+			float pathZ = 0.7071;
+			float pathDist = abs((wPosition.x * pathZ - wPosition.z * pathX)) * 0.02;
+			float pathMask = min(1.0, pathDist * 8.0);
+			
+			// Distance from center for mountain effect
+			float distFromCenter = length(wPosition.xz) * 0.002;
+			
+			// Enhanced colors with stronger green for grass
+			vec3 mountainTop = vec3(0.25, 0.45, 0.15);    // Green mountain top (darker)
+			vec3 mountainMid = vec3(0.3, 0.5, 0.2);       // Green mid mountain (medium)
+			vec3 grassColor = vec3(0.38, 0.58, 0.18);     // Deep grass green
+			vec3 lowerGrassColor = vec3(0.43, 0.63, 0.22); // Lighter grass for lower areas
+			vec3 pathColor = vec3(0.85, 0.75, 0.55);      // Sandy path
+			
+			// Choose color based on height and path
+			vec3 terrainColor;
+			
+			if (pathMask < 0.5) {
+				// Path color with slight variation
+				terrainColor = pathColor;
+			} 
+			else if (height > 30.0) {
+				// Mountain top - now green instead of snow
+				terrainColor = mountainTop;
+			} 
+			else if (height > 15.0) {
+				// Mountain sides - blend between top and mid
+				float blend = smoothstep(15.0, 30.0, height);
+				terrainColor = mix(mountainMid, mountainTop, blend);
+			}
+			else if (height > 5.0) {
+				// Lower mountain to grass transition
+				float blend = smoothstep(5.0, 15.0, height);
+				terrainColor = mix(grassColor, mountainMid, blend);
+			}
+			else {
+				// Ensure grass areas are definitely green
+				float blend = smoothstep(0.0, 5.0, height);
+				terrainColor = mix(lowerGrassColor, grassColor, blend);
+			}
+			
+			// Assign the color
+			diffuseColor.rgb = terrainColor;
+			
+			// Add very minimal distance fog - blue sky color
+			diffuseColor.rgb = mix(
+				vec3(0.6, 0.8, 0.95), // Sky blue fog
+				diffuseColor.rgb, 
+				smoothstep(900.0, 300.0, distanceFromCamera)
+			);
 		  `
 		);
 	  };
+	  
+	  // Force material to update
+	  this.material.needsUpdate = true;
 	}
   
 	updateLOD(LOD) {
@@ -212,6 +212,9 @@ import {
 	  this.geometry.dispose();
 	  this.geometry = geometry;
 	  this.updateGeometry();
+	  
+	  // Ensure shader updates are applied when LOD changes
+	  this.setupShaders();
 	}
   
 	createHeightAttribute() {
@@ -245,6 +248,9 @@ import {
   
 	  posAttr.needsUpdate = true;
 	  this.geometry.computeVertexNormals();
+	  
+	  // Ensure material updates
+	  this.material.needsUpdate = true;
   
 	  // Generate trees only for close chunks and not on high mountain
 	  if (!this.trees && this.LOD <= 1) {

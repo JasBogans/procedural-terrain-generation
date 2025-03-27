@@ -6,6 +6,7 @@ import ChunkManager from './src/chunkManager'
 import { getHeight } from './src/heightGenerator'
 import Ball from './src/Ball'
 import PhysicsWorld from './src/PhysicsWorld'
+import SimpleScene from './src/simple/SimpleScene'
 import gsap from 'gsap'
 import * as CANNON from 'cannon-es'
 
@@ -14,6 +15,8 @@ const loadingEl = document.getElementById('loader')
 const progressEl = document.getElementById('progress')
 const playEl = document.getElementById('play')
 const toggleEl = document.getElementById('sound-toggle')
+const scene1Btn = document.getElementById('scene1-btn')
+const scene2Btn = document.getElementById('scene2-btn')
 let volume = true
 const isMobile = window.innerWidth < 768
 
@@ -26,6 +29,11 @@ const cameraLookAt = new THREE.Vector3(0, 0, 0)
 const assets = {
   soundtrack: null,
 }
+
+// Scene management
+let activeScene = 'mountain' // Options: 'mountain', 'simple'
+let mountainSceneInitialized = false
+let simpleScene = null
 
 // Loading manager
 const loaderManager = new THREE.LoadingManager()
@@ -41,6 +49,15 @@ loaderManager.onLoad = () => {
       assets.soundtrack.setVolume(volume ? 0.1 : 0)
     }
     gsap.to(toggleEl, { opacity: volume ? 1 : 0.4, duration: 0.2 })
+  })
+
+  // Scene selection buttons
+  scene1Btn.addEventListener('click', () => {
+    switchToScene('mountain')
+  })
+  
+  scene2Btn.addEventListener('click', () => {
+    switchToScene('simple')
   })
 
   // Start game
@@ -61,7 +78,7 @@ loaderManager.onLoad = () => {
             gsap.to(playEl, { duration: 0.2, autoAlpha: 0 })
             
             // Start the ball rolling with a small push
-            if (ball && ball.body) {
+            if (activeScene === 'mountain' && ball && ball.body) {
               ball.applyForce(new THREE.Vector3(0, 0, 30))
             }
             
@@ -138,15 +155,19 @@ if (window.location.hash === '#debug') {
   
   // Terrain parameters
   const terrainFolder = gui.addFolder('Terrain')
-  terrainFolder.add(params, 'amplitude', 20, 50, 1).onChange(() => chunkManager.onParamsChange())
-  terrainFolder.add(params, 'octaves', 2, 8, 1).onChange(() => chunkManager.onParamsChange())
-  terrainFolder.add(params, 'persistance', 0.1, 0.9, 0.05).onChange(() => chunkManager.onParamsChange())
-  terrainFolder.add(params, 'lacunarity', 1.5, 3, 0.1).onChange(() => chunkManager.onParamsChange())
+  terrainFolder.add(params, 'amplitude', 20, 50, 1).onChange(() => chunkManager?.onParamsChange())
+  terrainFolder.add(params, 'octaves', 2, 8, 1).onChange(() => chunkManager?.onParamsChange())
+  terrainFolder.add(params, 'persistance', 0.1, 0.9, 0.05).onChange(() => chunkManager?.onParamsChange())
+  terrainFolder.add(params, 'lacunarity', 1.5, 3, 0.1).onChange(() => chunkManager?.onParamsChange())
   
   // Lighting parameters
   const lightFolder = gui.addFolder('Lighting')
   lightFolder.add(params, 'directionalLight', 0, 10, 0.1).onChange((val) => directionalLight.intensity = val)
   lightFolder.add(params, 'ambientLight', 0, 10, 0.1).onChange((val) => ambientLight.intensity = val)
+  
+  // Scene switcher in debug mode
+  const sceneFolder = gui.addFolder('Scene')
+  sceneFolder.add({ scene: 'mountain' }, 'scene', ['mountain', 'simple']).onChange((val) => switchToScene(val))
 }
 
 /**
@@ -198,6 +219,8 @@ controls.maxPolarAngle = Math.PI / 2 - 0.1 // Prevent going below ground
 const inputDirection = new THREE.Vector2(0, 0)
 
 document.addEventListener('keydown', (e) => {
+  if (activeScene !== 'mountain') return; // Only handle for mountain scene
+  
   switch(e.code) {
     case 'KeyW':
     case 'ArrowUp':
@@ -225,6 +248,8 @@ document.addEventListener('keydown', (e) => {
 })
 
 document.addEventListener('keyup', (e) => {
+  if (activeScene !== 'mountain') return; // Only handle for mountain scene
+  
   switch(e.code) {
     case 'KeyW':
     case 'ArrowUp':
@@ -263,6 +288,8 @@ if (isMobile) {
   
   // Joystick controls
   joystick.addEventListener('touchstart', (e) => {
+    if (activeScene !== 'mountain') return; // Only handle for mountain scene
+    
     isDragging = true
     startX = e.touches[0].clientX
     startY = e.touches[0].clientY
@@ -270,22 +297,22 @@ if (isMobile) {
   })
   
   document.addEventListener('touchmove', (e) => {
-    if (isDragging) {
-      const touchX = e.touches[0].clientX
-      const touchY = e.touches[0].clientY
-      
-      // Calculate direction vector, normalized to [-1, 1]
-      const deltaX = (touchX - startX) / 50
-      const deltaY = (touchY - startY) / 50
-      
-      // Clamp values
-      inputDirection.x = Math.max(-1, Math.min(1, deltaX))
-      inputDirection.y = Math.max(-1, Math.min(1, -deltaY)) // Invert Y for natural feel
-      
-      // Update stick visual position
-      stick.style.transform = `translate(${deltaX * 20}px, ${deltaY * 20}px)`
-      e.preventDefault()
-    }
+    if (activeScene !== 'mountain' || !isDragging) return;
+    
+    const touchX = e.touches[0].clientX
+    const touchY = e.touches[0].clientY
+    
+    // Calculate direction vector, normalized to [-1, 1]
+    const deltaX = (touchX - startX) / 50
+    const deltaY = (touchY - startY) / 50
+    
+    // Clamp values
+    inputDirection.x = Math.max(-1, Math.min(1, deltaX))
+    inputDirection.y = Math.max(-1, Math.min(1, -deltaY)) // Invert Y for natural feel
+    
+    // Update stick visual position
+    stick.style.transform = `translate(${deltaX * 20}px, ${deltaY * 20}px)`
+    e.preventDefault()
   })
   
   document.addEventListener('touchend', () => {
@@ -296,7 +323,11 @@ if (isMobile) {
   
   // Reset button
   resetButton.addEventListener('touchstart', () => {
-    if (ball) resetBall()
+    if (activeScene === 'mountain' && ball) {
+      resetBall();
+    } else if (activeScene === 'simple' && simpleScene) {
+      simpleScene.ball.reset();
+    }
   })
 }
 
@@ -306,13 +337,27 @@ if (isMobile) {
 let chunkManager, ball, physicsWorld
 
 function init(assets) {
+  // Initialize the mountain scene first
+  initMountainScene(assets);
+  
+  // Start rendering
+  requestAnimationFrame(tic);
+}
+
+/**
+ * Initialize the mountain scene
+ */
+function initMountainScene(assets) {
+  if (mountainSceneInitialized) return;
+  
   // Create physics world
-  physicsWorld = new PhysicsWorld()
+  physicsWorld = new PhysicsWorld();
+  console.log("Physics world created");
   
   // Create temporary object for chunkManager initialization
-  const tempTarget = { position: new THREE.Vector3(0, 50, 0) }
+  const tempTarget = { position: new THREE.Vector3(0, 50, 0) };
   
-  // Create chunk manager for terrain first
+  // Create chunk manager for terrain
   chunkManager = new ChunkManager(
     256, // Chunk size
     tempTarget,
@@ -320,28 +365,180 @@ function init(assets) {
     scene,
     uniforms,
     assets,
-    physicsWorld // Pass physics world to chunk manager
-  )
+    physicsWorld
+  );
   
-  // Now create the ball with access to the noise
-  ball = new Ball(1.5, physicsWorld.world)
+  console.log("Chunk manager initialized");
   
-  // Position the ball at a suitable starting point using chunkManager's noise
-  const startHeight = Math.max(getHeight(0, 0, chunkManager.noise, params), 0) + 50
-  ball.position.y = startHeight
-  if (ball.body) {
-    ball.body.position.set(0, startHeight, 0)
+  // Wait a moment for chunks to be created before placing the ball
+  setTimeout(() => {
+    // Create the ball AFTER initial chunks are loaded
+    ball = new Ball(1.5, physicsWorld);
+    scene.add(ball);
+    
+    // Find mountain peak
+    const mountainPeak = findMountainPeak();
+    console.log("Mountain peak found at:", mountainPeak);
+    
+    // Position the ball at the mountain peak with extra height
+    ball.reset(new THREE.Vector3(mountainPeak.x, mountainPeak.y + 5, mountainPeak.z));
+    
+    // Update the target in chunkManager to be the ball
+    chunkManager.target = ball;
+    
+    // Show message
+    showMessage('Roll down the mountain!');
+    
+    // Add checkpoints for fun
+    addGoals();
+    
+    mountainSceneInitialized = true;
+  }, 1500); // Longer delay to ensure terrain is ready
+  
+  // Create lights for this scene
+  createMountainSceneLights();
+}
+
+/**
+ * Create the simple scene for the ball physics playground
+ */
+function initSimpleScene() {
+  if (simpleScene) return simpleScene;
+  
+  // Create a new simple scene
+  simpleScene = new SimpleScene(renderer, camera);
+  
+  return simpleScene;
+}
+
+/**
+ * Switch between scenes
+ */
+function switchToScene(sceneName) {
+  if (sceneName === activeScene) return;
+  
+  // Hide current scene content
+  clearScene();
+  
+  // Switch to the requested scene
+  activeScene = sceneName;
+  
+  if (sceneName === 'mountain') {
+    // Activate mountain scene
+    controls.enabled = window.location.hash === '#debug';
+    
+    if (!mountainSceneInitialized) {
+      initMountainScene(assets);
+    } else {
+      // Re-add lights and objects to the scene
+      restoreMountainScene();
+    }
+    
+    // Update buttons
+    scene1Btn.classList.add('bg-violet-400');
+    scene2Btn.classList.remove('bg-violet-400');
+    
+    // Message
+    showMessage('Mountain scene active!');
+    
+    // Hide simple scene instructions
+    document.getElementById('simple-ball-instructions').classList.add('hidden');
+    
+    // Set scene background for mountain
+    scene.fog = new THREE.Fog(params.fog, 200, 800);
+    scene.background = new THREE.Color(params.fog);
+    
+  } else if (sceneName === 'simple') {
+    // Activate simple scene
+    if (!simpleScene) {
+      simpleScene = initSimpleScene();
+    }
+    
+    // Activate the simple scene
+    simpleScene.activate(true); // Use the shared camera
+    
+    // Update buttons
+    scene1Btn.classList.remove('bg-violet-400');
+    scene2Btn.classList.add('bg-violet-400');
+    
+    // Message
+    showMessage('Simple ball scene active!');
   }
-  scene.add(ball)
+}
+
+/**
+ * Clear the current scene
+ */
+function clearScene() {
+  if (activeScene === 'mountain') {
+    // Just hide the objects, don't dispose them
+    mountinSceneObjectsVisible(false);
+  } else if (activeScene === 'simple' && simpleScene) {
+    // Deactivate simple scene
+    simpleScene.deactivate();
+  }
+}
+
+/**
+ * Show/hide mountain scene objects
+ */
+function mountinSceneObjectsVisible(visible) {
+  // Hide/show all objects in the mountain scene
+  // This is more efficient than removing and re-adding them
+  if (chunkManager) {
+    for (const key in chunkManager.chunks) {
+      const chunk = chunkManager.chunks[key];
+      if (chunk) chunk.visible = visible;
+    }
+  }
   
-  // Update the target in chunkManager to be the ball
-  chunkManager.target = ball
+  if (ball) {
+    ball.visible = visible;
+  }
   
-  // Add checkpoints for fun
-  addGoals()
+  // Hide/show lights
+  scene.traverse(obj => {
+    if (obj.isLight && obj.userData.mountainScene) {
+      obj.visible = visible;
+    }
+  });
+}
+
+/**
+ * Restore mountain scene objects without rebuilding them
+ */
+function restoreMountainScene() {
+  mountinSceneObjectsVisible(true);
+}
+
+/**
+ * Create lights for the mountain scene
+ */
+function createMountainSceneLights() {
+  const ambientLight = new THREE.AmbientLight(0xffffff, params.ambientLight);
+  ambientLight.userData.mountainScene = true;
   
-  // Start rendering
-  requestAnimationFrame(tic)
+  const directionalLight = new THREE.DirectionalLight(
+    0xffffff,
+    params.directionalLight
+  );
+  directionalLight.position.set(1, 1, 1);
+  directionalLight.userData.mountainScene = true;
+  
+  scene.add(ambientLight, directionalLight);
+}
+
+/**
+ * Find the highest point on the mountain
+ */
+function findMountainPeak() {
+  // Check if the chunk manager has a mountain peak finding function
+  if (chunkManager && chunkManager.findMountainPeak) {
+    return chunkManager.findMountainPeak();
+  }
+  
+  // Fallback to a default position if chunk manager isn't ready
+  return new THREE.Vector3(0, 60, 0);
 }
 
 /**
@@ -369,6 +566,7 @@ function addGoals() {
     const goalMarker = new THREE.Mesh(geometry, material)
     goalMarker.position.set(pos.x, y, pos.z)
     goalMarker.rotation.x = Math.PI / 2
+    goalMarker.userData.mountainScene = true; // Mark for scene switching
     scene.add(goalMarker)
     
     // Add trigger
@@ -428,23 +626,17 @@ function showMessage(text, duration = 3000) {
  * Reset ball position
  */
 function resetBall() {
-  const startHeight = Math.max(getHeight(0, 0, chunkManager.noise, params), 0) + 50
-  ball.reset(new THREE.Vector3(0, startHeight, 0))
+  if (!ball) return;
+  
+  // Find the highest point on the mountain
+  const mountainPeak = findMountainPeak();
+  
+  // Add extra height to ensure ball starts above terrain
+  ball.reset(new THREE.Vector3(mountainPeak.x, mountainPeak.y + 5, mountainPeak.z));
   
   // Show message
-  showMessage('Ball reset to start position!')
+  showMessage('Ball reset to mountain peak!');
 }
-
-/**
- * Lights
- */
-const ambientLight = new THREE.AmbientLight(0xffffff, params.ambientLight)
-const directionalLight = new THREE.DirectionalLight(
-  0xffffff,
-  params.directionalLight
-)
-directionalLight.position.set(1, 1, 1)
-scene.add(ambientLight, directionalLight)
 
 /**
  * Three.js Clock
@@ -468,41 +660,54 @@ function tic() {
    */
   const time = clock.getElapsedTime()
 
-  // Update physics
-  if (physicsWorld) {
-    physicsWorld.update(deltaTime)
-  }
-
-  // Update ball with player input
-  if (ball) {
-    ball.update(deltaTime, inputDirection)
+  // Update the active scene
+  if (activeScene === 'mountain') {
+    // Update mountain scene
     
-    // Check if ball fell below a certain threshold
-    if (ball.position.y < -50) {
-      resetBall()
+    // Update physics
+    if (physicsWorld) {
+      physicsWorld.update(deltaTime)
     }
+
+    // Update ball with player input
+    if (ball) {
+      ball.update(deltaTime, inputDirection)
+      
+      // Check if ball fell below a certain threshold
+      if (ball.position.y < -50) {
+        resetBall()
+      }
+      
+      // Update camera to follow ball
+      updateCamera(deltaTime)
+    }
+
+    // Update uniforms values
+    uniforms.uTime.value = time
+    if (ball) {
+      uniforms.uCamera.value.copy(ball.position)
+    }
+
+    // Update terrain chunks around the ball
+    if (chunkManager) {
+      chunkManager.updateChunks()
+    }
+
+    // Render the mountain scene
+    renderer.render(scene, camera)
     
-    // Update camera to follow ball
-    updateCamera(deltaTime)
-  }
-
-  // Update uniforms values
-  uniforms.uTime.value = time
-  if (ball) {
-    uniforms.uCamera.value.copy(ball.position)
-  }
-
-  // Update terrain chunks around the ball
-  if (chunkManager) {
-    chunkManager.updateChunks()
+  } else if (activeScene === 'simple' && simpleScene) {
+    // Update simple scene
+    simpleScene.update(deltaTime)
+    
+    // Render the simple scene
+    renderer.render(simpleScene.scene, camera)
   }
 
   // Update controls if enabled
   if (controls.enabled) {
     controls.update()
   }
-
-  renderer.render(scene, camera)
 
   requestAnimationFrame(tic)
 }
@@ -591,6 +796,11 @@ function handleResize() {
 
   const pixelRatio = Math.min(window.devicePixelRatio, 2)
   renderer.setPixelRatio(pixelRatio)
+  
+  // Update any scene-specific resize handling
+  if (activeScene === 'simple' && simpleScene) {
+    simpleScene.handleResize(sizes.width, sizes.height);
+  }
 }
 
 // Add some style for mobile controls and messages
@@ -663,6 +873,18 @@ style.textContent = `
   z-index: 1000;
   text-align: center;
   pointer-events: none;
+}
+
+#scene-selector {
+  padding-top: 10px;
+}
+
+#scene-selector button {
+  transition: background-color 0.3s;
+}
+
+#scene1-btn {
+  background-color: #a78bfa; /* Default to violet/active color for mountain scene */
 }
 `
 document.head.appendChild(style)

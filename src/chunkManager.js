@@ -1,6 +1,7 @@
 import { Vector2, Vector3 } from 'three';
 import Chunk from './chunk';
 import { createNoise2D } from 'simplex-noise';
+import { getHeight } from './heightGenerator';
 
 const _V = new Vector2(0, 0);
 const isMobile = window.innerWidth < 768;
@@ -37,17 +38,27 @@ export default class ChunkManager {
     // Start by loading chunks around mountain center
     this.updateChunks();
     
-    // Initialize by ensuring the mountain peak is generated
-    // This chunk will contain the starting point for the ball
-    this.createChunk(0, 0, 0); // Create center chunk with mountain peak with highest detail
+    // Create center chunk with mountain peak with highest detail first
+    this.createChunk(0, 0, 0);
+    console.log("Creating center chunk for mountain peak");
     
-    // Create surrounding chunks for the descent area
-    for (let i = -1; i <= 1; i++) {
-      for (let j = -1; j <= 1; j++) {
+    // Create surrounding chunks with high detail for physics stability
+    // This ensures a larger physics-enabled area around the starting point
+    const physicsRadius = 2; // Radius of physics-enabled chunks
+    for (let i = -physicsRadius; i <= physicsRadius; i++) {
+      for (let j = -physicsRadius; j <= physicsRadius; j++) {
         if (i === 0 && j === 0) continue; // Skip center chunk (already created)
         this.createChunk(i, j, 0); // Create surrounding chunks with highest detail
+        console.log(`Creating physics chunk at ${i},${j}`);
       }
     }
+    
+    // Wait for chunks to load before trying to place the ball
+    setTimeout(() => {
+      // Find mountain peak and log it
+      const peak = this.findMountainPeak();
+      console.log("Mountain peak located at:", peak);
+    }, 500);
   }
 
   getLODbyCoords(k, w) {
@@ -95,9 +106,16 @@ export default class ChunkManager {
       this.scene.add(chunk);
       
       // Add physics for close chunks or center mountain chunks
-      if (this.physicsWorld && (LOD <= 1 || (_V.set(i, j).length() <= 2))) {
-        this.physicsWorld.addHeightfieldFromChunk(chunk);
-        this.activePhysicsChunks.add(`${i}|${j}`);
+      // Important: Create physics for all chunks within a certain radius from center
+      const distFromCenter = Math.sqrt(i*i + j*j);
+      if (this.physicsWorld && (LOD <= 1 || distFromCenter <= 2)) {
+        console.log(`Adding physics for chunk ${i},${j}`);
+        const physicsBody = this.physicsWorld.addHeightfieldFromChunk(chunk);
+        if (physicsBody) {
+          this.activePhysicsChunks.add(`${i}|${j}`);
+        } else {
+          console.warn(`Failed to create physics for chunk ${i},${j}`);
+        }
       }
     }
   }
@@ -183,7 +201,8 @@ export default class ChunkManager {
             callback: () => {
               chunk.updateLOD(LOD);
               // Update physics for this chunk if needed
-              if (LOD <= 1 && !this.activePhysicsChunks.has(key) && this.physicsWorld) {
+              const distFromCenter = Math.sqrt(k*k + w*w);
+              if ((LOD <= 1 || distFromCenter <= 2) && !this.activePhysicsChunks.has(key) && this.physicsWorld) {
                 this.physicsWorld.addHeightfieldFromChunk(chunk);
                 this.activePhysicsChunks.add(key);
               }
@@ -202,8 +221,11 @@ export default class ChunkManager {
 
   disposeChunk(chunk, key) {
     // Don't dispose the center chunks with the mountain
-    if (chunk.coords && Math.sqrt(chunk.coords[0]**2 + chunk.coords[1]**2) <= 1) {
-      return;
+    if (chunk.coords) {
+      const distFromCenter = Math.sqrt(chunk.coords[0]**2 + chunk.coords[1]**2);
+      if (distFromCenter <= 2) {
+        return; // Keep central mountain chunks
+      }
     }
     
     chunk.dispose();
@@ -248,14 +270,15 @@ export default class ChunkManager {
   
   // Find the highest point on the mountain for placing the ball
   findMountainPeak() {
-    // Look for the mountain peak in the center chunks
+    // First check if we have the center chunk loaded
     const centerChunk = this.chunks['0|0'];
     if (!centerChunk || !centerChunk.geometry) {
-      // Return a reasonable default height if chunk isn't loaded yet
-      return new Vector3(0, 55, 0);
+      console.warn("Center chunk not loaded yet, estimating mountain peak position");
+      // Use getHeight to estimate the peak height at the center
+      return this.findPeakWithNoiseFunction();
     }
     
-    // Search through the geometry to find the highest point
+    // Search through the center chunk geometry to find the highest point
     const positions = centerChunk.geometry.getAttribute('position');
     let maxHeight = 0;
     let peakX = 0;
@@ -270,6 +293,57 @@ export default class ChunkManager {
       }
     }
     
-    return new Vector3(peakX, maxHeight + 3, peakZ); // Add small offset for starting height
+    console.log(`Found peak at x:${peakX}, y:${maxHeight}, z:${peakZ} in center chunk geometry`);
+    
+    // Do a more precise search around this point
+    return this.refinePeakLocation(peakX, maxHeight, peakZ);
+  }
+  
+  // Use noise function directly to find the peak
+  findPeakWithNoiseFunction() {
+    const searchRadius = this.chunkSize / 4;
+    const searchStep = searchRadius / 10;
+    let maxHeight = 0;
+    let peakX = 0;
+    let peakZ = 0;
+    
+    // Search around the center point
+    for (let x = -searchRadius; x <= searchRadius; x += searchStep) {
+      for (let z = -searchRadius; z <= searchRadius; z += searchStep) {
+        const height = getHeight(x, z, this.noise, this.params);
+        if (height > maxHeight) {
+          maxHeight = height;
+          peakX = x;
+          peakZ = z;
+        }
+      }
+    }
+    
+    console.log(`Found peak at x:${peakX}, y:${maxHeight}, z:${peakZ} using noise function`);
+    return new Vector3(peakX, maxHeight + 3, peakZ);
+  }
+  
+  // Refine peak location with higher precision
+  refinePeakLocation(startX, startY, startZ) {
+    const searchRadius = 10;
+    const searchStep = 1;
+    let maxHeight = startY;
+    let peakX = startX;
+    let peakZ = startZ;
+    
+    // Do a finer search around the initial peak
+    for (let x = startX - searchRadius; x <= startX + searchRadius; x += searchStep) {
+      for (let z = startZ - searchRadius; z <= startZ + searchRadius; z += searchStep) {
+        const height = getHeight(x, z, this.noise, this.params);
+        if (height > maxHeight) {
+          maxHeight = height;
+          peakX = x;
+          peakZ = z;
+        }
+      }
+    }
+    
+    console.log(`Refined peak at x:${peakX}, y:${maxHeight}, z:${peakZ}`);
+    return new Vector3(peakX, maxHeight + 3, peakZ);
   }
 }

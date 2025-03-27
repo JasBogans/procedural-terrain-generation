@@ -5,28 +5,27 @@ import {
   Vector3,
   Object3D,
   MathUtils,
-  TorusGeometry,
-  IcosahedronGeometry
+  IcosahedronGeometry,
+  Raycaster
 } from 'three';
 import * as CANNON from 'cannon-es';
 
 export default class Ball extends Object3D {
   velocity = new Vector3(0, 0, 0);
-  acceleration = new Vector3(0, -9.8, 0); // Gravity
   onGround = false;
   trailPositions = [];
   maxTrailLength = 20;
+  lastSafePosition = new Vector3();
   
-  constructor(radius = 1, world) {
+  constructor(radius = 1, physicsWorld) {
     super();
     this.radius = radius;
-    this.world = world;
+    this.physicsWorld = physicsWorld;
     
-    // Create the visual representation - low-poly style matching reference
-    // Use icosahedron for more low-poly faceted look
-    const geometry = new IcosahedronGeometry(radius, 1); // Lower subdivision for faceted look
+    // Create the visual representation - low-poly style
+    const geometry = new IcosahedronGeometry(radius, 1);
     const material = new MeshStandardMaterial({
-      color: 0xFF4136, // Bright red like in reference
+      color: 0xFF4136,
       roughness: 0.4,
       metalness: 0.2,
       flatShading: true
@@ -35,89 +34,63 @@ export default class Ball extends Object3D {
     this.mesh = new Mesh(geometry, material);
     this.add(this.mesh);
     
-    // Create white ring around ball like in reference
-    // const ringGeometry = new TorusGeometry(radius * 1.2, radius * 0.15, 8, 12);
-    // const ringMaterial = new MeshStandardMaterial({
-    //   color: 0xFFFFFF,
-    //   roughness: 0.4,
-    //   metalness: 0.2,
-    //   flatShading: true
-    // });
-    
-    // this.ring = new Mesh(ringGeometry, ringMaterial);
-    // this.ring.rotation.x = Math.PI / 2;
-    // this.add(this.ring);
-    
     // Create physics body
     this.initPhysics();
   }
   
   initPhysics() {
-    // Create a physics body
-    this.body = new CANNON.Body({
-      mass: 5,
-      shape: new CANNON.Sphere(this.radius),
-      position: new CANNON.Vec3(0, 50, 0), // Start higher up
-      material: new CANNON.Material({
-        friction: 0.3,
-        restitution: 0.2
-      })
-    });
+    if (!this.physicsWorld) {
+      console.error("Physics world not provided to Ball");
+      return;
+    }
     
-    // Add damping to make the ball movement more realistic
-    this.body.linearDamping = 0.1;
-    this.body.angularDamping = 0.2;
+    // Start at a high position above the terrain
+    const startPosition = new Vector3(0, 100, 0);
+    this.body = this.physicsWorld.createBall(this.radius, startPosition);
     
-    // Add the body to the world
-    this.world.addBody(this.body);
+    if (!this.body) {
+      console.error("Failed to create ball physics body");
+      return;
+    }
+    
+    // Set up collision callback
+    this.body.addEventListener("collide", this.handleCollision.bind(this));
+    
+    // Initial position sync
+    this.position.copy(startPosition);
+    this.lastSafePosition.copy(startPosition);
+    
+    // Create raycaster for ground detection
+    this.raycaster = new Raycaster();
+    this.downDirection = new Vector3(0, -1, 0);
+  }
+  
+  handleCollision(event) {
+    const { body } = event;
+    
+    if (body.mass === 0) { // Static body = terrain
+      this.onGround = true;
+      // Save last known safe position when in contact with ground
+      this.lastSafePosition.copy(this.position);
+    }
   }
   
   applyForce(force) {
     if (!this.body) return;
     
+    // Apply force to the center of mass
     this.body.applyForce(
       new CANNON.Vec3(force.x, force.y, force.z),
       new CANNON.Vec3(0, 0, 0)
     );
   }
   
-  checkGroundContact() {
-    if (!this.body) return false;
-    
-    // Cast a ray from the ball center downward
-    const start = new CANNON.Vec3(
-      this.body.position.x,
-      this.body.position.y,
-      this.body.position.z
-    );
-    const end = new CANNON.Vec3(
-      this.body.position.x,
-      this.body.position.y - (this.radius + 0.2), // Just below the ball
-      this.body.position.z
-    );
-    
-    // Perform the raycast
-    const result = new CANNON.RaycastResult();
-    this.world.raycastClosest(start, end, {}, result);
-    
-    // If the ray hit something, we're on or near the ground
-    this.isOnGround = result.hasHit;
-    return this.isOnGround;
-  }
-  
   update(dt, inputDirection) {
     if (!this.body) return;
     
     // Apply player input if on ground
-    if (this.checkGroundContact() && inputDirection.lengthSq() > 0) {
-      // Get current movement direction
-      const currentDir = new Vector3(
-        this.body.velocity.x,
-        0,
-        this.body.velocity.z
-      ).normalize();
-      
-      // Calculate forward and right directions relative to camera
+    if (this.onGround && inputDirection.lengthSq() > 0) {
+      // Calculate directions relative to camera
       const cameraDirection = this.getWorldDirection(new Vector3());
       cameraDirection.y = 0;
       cameraDirection.normalize();
@@ -131,14 +104,39 @@ export default class Ball extends Object3D {
       forceDirection.addScaledVector(right, inputDirection.x);
       forceDirection.normalize();
       
-      // Apply the force - stronger force for going uphill
+      // Apply force with strength that works with simplified physics
+      const forceMultiplier = 15; 
+      
       const force = new Vector3(
-        forceDirection.x * 25, 
+        forceDirection.x * forceMultiplier, 
         0,
-        forceDirection.z * 25
+        forceDirection.z * forceMultiplier
       );
       
       this.applyForce(force);
+      
+      // Add small upward boost for uphill movement
+      if (this.body.velocity.y < 0) {
+        this.body.applyForce(
+          new CANNON.Vec3(0, 3, 0),
+          new CANNON.Vec3(0, 0, 0)
+        );
+      }
+    }
+    
+    // Apply speed limit for stability
+    const horizontalVelocity = new CANNON.Vec3(
+      this.body.velocity.x,
+      0,
+      this.body.velocity.z
+    );
+    const horizontalSpeed = horizontalVelocity.length();
+    const maxSpeed = 30;
+    
+    if (horizontalSpeed > maxSpeed) {
+      const scale = maxSpeed / horizontalSpeed;
+      this.body.velocity.x *= scale;
+      this.body.velocity.z *= scale;
     }
     
     // Update visual mesh position to match physics body
@@ -156,14 +154,34 @@ export default class Ball extends Object3D {
       this.body.quaternion.w
     );
     
-    // Keep the ring level with horizon for visual effect
-    // This creates a stylized effect like in the reference image
-    // Use a simpler approach to keep the ring horizontal
-    // this.ring.rotation.setFromQuaternion(this.quaternion);
-    // this.ring.rotation.x = Math.PI / 2;
+    // Check for falling through terrain
+    this.checkSafety();
     
-    // Maintain trail for effects
+    // Reset ground flag after air time
+    if (this.body.velocity.y > 0.5) {
+      this.onGround = false;
+    }
+    
+    // Maintain trail for visual effects
     this.updateTrail();
+  }
+  
+  checkSafety() {
+    // Safety check - if ball falls below a certain threshold or is falling too fast
+    if (this.position.y < -50) {
+      console.log("Ball fell below threshold, resetting to safe position");
+      this.reset(this.lastSafePosition.clone());
+      return;
+    }
+    
+    // Additional check for excessive velocity
+    const velocity = this.body.velocity;
+    const speedY = Math.abs(velocity.y);
+    
+    if (speedY > 40) {
+      console.log("Excessive vertical velocity detected, dampening");
+      this.body.velocity.y *= 0.5;
+    }
   }
   
   updateTrail() {
@@ -175,14 +193,28 @@ export default class Ball extends Object3D {
   }
   
   reset(position) {
-    // Reset the ball position
+    // Reset the ball position and physics state
     if (this.body) {
       this.body.position.set(position.x, position.y, position.z);
       this.body.velocity.set(0, 0, 0);
       this.body.angularVelocity.set(0, 0, 0);
       this.body.force.set(0, 0, 0);
       this.body.torque.set(0, 0, 0);
+      this.body.wakeUp();
     }
+    
+    this.position.copy(position);
+    this.lastSafePosition.copy(position);
     this.trailPositions = [];
+    this.onGround = false;
+  }
+  
+  dispose() {
+    if (this.body && this.physicsWorld && this.physicsWorld.world) {
+      this.physicsWorld.world.removeBody(this.body);
+    }
+    
+    this.geometry?.dispose();
+    this.material?.dispose();
   }
 }

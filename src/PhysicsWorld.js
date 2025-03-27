@@ -3,129 +3,147 @@ import { Vector3 } from 'three';
 
 export default class PhysicsWorld {
   constructor() {
+    // Create physics world with standard gravity
     this.world = new CANNON.World({
-      gravity: new CANNON.Vec3(0, -9.82, 0) // Earth gravity
+      gravity: new CANNON.Vec3(0, -9.82, 0)
     });
     
-    // Configure solver for more stable simulation
+    // Configure solver with balanced settings
     this.world.solver.iterations = 10;
     this.world.broadphase = new CANNON.SAPBroadphase(this.world);
     
-    // Contact material properties
+    // Create materials
     this.groundMaterial = new CANNON.Material('ground');
     this.ballMaterial = new CANNON.Material('ball');
     
-    // Create contact behavior between ball and ground
+    // Create contact material with good friction and minimal bounce
     const ballGroundContact = new CANNON.ContactMaterial(
       this.ballMaterial,
       this.groundMaterial,
       {
-        friction: 0.4,        // More friction for stylized mountain
-        restitution: 0.2      // Slightly bouncy
+        friction: 0.7,
+        restitution: 0.1
       }
     );
     
     this.world.addContactMaterial(ballGroundContact);
     
-    // Track bodies for cleanup
+    // Keep track of bodies
     this.physicsBodies = new Map();
+    this.debugMode = false;
+    
+    // Create safety ground plane far below to catch anything that falls through
+    this.createSafetyGround();
   }
   
-  update(dt) {
-    // Step the physics simulation forward
-    this.world.step(1/60, dt, 3);
-  }
-  
-  addHeightfieldFromChunk(chunk) {
-    // Skip if chunk doesn't exist
-    if (!chunk || !chunk.geometry) return null;
-    
-    // This function creates a heightfield shape from a Three.js terrain chunk
-    const geometry = chunk.geometry;
-    const position = chunk.position;
-    
-    const posAttribute = geometry.getAttribute('position');
-    
-    // Calculate segments from position count (approx square root)
-    const segmentsX = Math.round(Math.sqrt(posAttribute.count) - 1);
-    const segmentsZ = segmentsX;
-    
-    // Create a 2D array to store the height data
-    const heightData = [];
-    
-    // Extract the height data
-    for (let z = 0; z <= segmentsZ; z++) {
-      const row = [];
-      for (let x = 0; x <= segmentsX; x++) {
-        const index = z * (segmentsX + 1) + x;
-        if (index < posAttribute.count) {
-          // Get height from geometry
-          const height = posAttribute.getY(index);
-          row.push(height);
-        } else {
-          console.warn("Index out of bounds when building heightfield", index, posAttribute.count);
-          // Fallback - use previous height or 0
-          row.push(row.length > 0 ? row[row.length - 1] : 0);
-        }
-      }
-      heightData.push(row);
-    }
-    
-    // Safety check for empty heightData
-    if (heightData.length === 0 || heightData[0].length === 0) {
-      console.warn("Empty height data for chunk, skipping physics creation");
-      return null;
-    }
-    
-    // Create a heightfield shape
-    const heightfieldShape = new CANNON.Heightfield(heightData, {
-      elementSize: chunk.size / segmentsX
-    });
-    
-    // Create a body for the heightfield
-    const heightfieldBody = new CANNON.Body({
-      mass: 0, // Static body
-      shape: heightfieldShape,
+  createSafetyGround() {
+    // Create a ground plane far below to catch anything that falls through terrain
+    const safetyGround = new CANNON.Body({
+      mass: 0,
+      position: new CANNON.Vec3(0, -100, 0),
+      shape: new CANNON.Plane(),
       material: this.groundMaterial
     });
     
-    // Position the heightfield body
-    // Heightfield is centered on its local x-z plane, so we need to adjust position
-    const sizeX = chunk.size;
-    const sizeZ = chunk.size;
-    heightfieldBody.position.set(
-      position.x - sizeX / 2,
-      position.y,
-      position.z - sizeZ / 2
+    // Rotate to face upward
+    safetyGround.quaternion.setFromAxisAngle(
+      new CANNON.Vec3(1, 0, 0),
+      -Math.PI/2
     );
     
-    // Rotate to align with Three.js coordinate system
-    heightfieldBody.quaternion.setFromAxisAngle(
-      new CANNON.Vec3(1, 0, 0),
-      -Math.PI / 2
-    );
+    this.world.addBody(safetyGround);
+  }
+  
+  update(dt) {
+    // Use fixed timestep for stable simulation
+    const fixedTimeStep = 1/60;
+    const maxSubSteps = 3;
+    
+    this.world.step(fixedTimeStep, dt, maxSubSteps);
+    
+    if (this.debugMode && this.debugBallBody) {
+      console.log(`Ball position: ${this.debugBallBody.position.y.toFixed(2)}, velocity: ${this.debugBallBody.velocity.y.toFixed(2)}`);
+    }
+  }
+  
+  addHeightfieldFromChunk(chunk) {
+    if (!chunk || !chunk.geometry) return null;
+    
+    // Instead of creating complex heightfields that can cause issues,
+    // let's create a simpler collision representation
+    
+    // Get geometry bounds
+    const position = chunk.position;
+    const size = chunk.size;
+    
+    // Find average height in this chunk
+    let avgHeight = 0;
+    const posAttribute = chunk.geometry.getAttribute('position');
+    
+    // Sample a subset of positions for performance
+    const sampleCount = Math.min(100, posAttribute.count);
+    const sampleStep = Math.floor(posAttribute.count / sampleCount);
+    
+    let highestPoint = -Infinity;
+    let highestX = 0, highestZ = 0;
+    
+    for (let i = 0; i < posAttribute.count; i += sampleStep) {
+      const y = posAttribute.getY(i);
+      avgHeight += y;
+      
+      // Track highest point for ball placement
+      if (y > highestPoint) {
+        highestPoint = y;
+        highestX = posAttribute.getX(i) + position.x;
+        highestZ = posAttribute.getZ(i) + position.z;
+      }
+    }
+    
+    avgHeight /= (posAttribute.count / sampleStep);
+    
+    // Store highest point in chunk for future reference
+    chunk.highestPoint = {
+      x: highestX,
+      y: highestPoint,
+      z: highestZ
+    };
+    
+    // Create a collision box that approximates this terrain chunk
+    const halfSize = size / 2;
+    const boxShape = new CANNON.Box(new CANNON.Vec3(halfSize, Math.max(20, avgHeight/2), halfSize));
+    
+    const groundBody = new CANNON.Body({
+      mass: 0, // Static body
+      position: new CANNON.Vec3(position.x, avgHeight/2 - 1, position.z),
+      shape: boxShape,
+      material: this.groundMaterial
+    });
     
     // Add the body to the world
-    this.world.addBody(heightfieldBody);
+    this.world.addBody(groundBody);
     
-    // Store a reference to the body 
+    // Store references
     const chunkId = `${chunk.coords[0]}|${chunk.coords[1]}`;
-    this.physicsBodies.set(chunkId, heightfieldBody);
-    chunk.physicsBody = heightfieldBody;
+    this.physicsBodies.set(chunkId, groundBody);
+    chunk.physicsBody = groundBody;
     
-    return heightfieldBody;
+    if (this.debugMode) {
+      console.log(`Created physics for chunk at ${chunk.coords[0]},${chunk.coords[1]} with avg height ${avgHeight.toFixed(2)}`);
+    }
+    
+    return groundBody;
   }
   
   removeHeightfield(chunk) {
     if (!chunk) return;
     
-    // Get the physics body for this chunk
+    // Remove physics body
     if (chunk.physicsBody) {
       this.world.removeBody(chunk.physicsBody);
       chunk.physicsBody = null;
     }
     
-    // Also try to remove by ID in case the reference was lost
+    // Clean up references
     if (chunk.coords) {
       const chunkId = `${chunk.coords[0]}|${chunk.coords[1]}`;
       const body = this.physicsBodies.get(chunkId);
@@ -136,8 +154,28 @@ export default class PhysicsWorld {
     }
   }
   
+  createBall(radius, position) {
+    // Create ball with simplified physics properties
+    const sphereShape = new CANNON.Sphere(radius);
+    
+    const body = new CANNON.Body({
+      mass: 5,
+      shape: sphereShape,
+      material: this.ballMaterial,
+      position: new CANNON.Vec3(position.x, position.y, position.z),
+      linearDamping: 0.1,
+      angularDamping: 0.2,
+      allowSleep: false
+    });
+    
+    // Add to world
+    this.world.addBody(body);
+    this.debugBallBody = body;
+    
+    return body;
+  }
+  
   createSphereTrigger(position, radius, callback) {
-    // Create a non-physical trigger sphere
     const shape = new CANNON.Sphere(radius);
     const body = new CANNON.Body({
       mass: 0,
@@ -146,16 +184,12 @@ export default class PhysicsWorld {
       isTrigger: true
     });
     
-    // Add event handler for collisions
     body.addEventListener('collide', callback);
-    
-    // Add to world
     this.world.addBody(body);
     return body;
   }
   
   createBoxTrigger(position, size, callback) {
-    // Create a non-physical trigger box
     const shape = new CANNON.Box(new CANNON.Vec3(size.x/2, size.y/2, size.z/2));
     const body = new CANNON.Body({
       mass: 0,
@@ -164,10 +198,7 @@ export default class PhysicsWorld {
       isTrigger: true
     });
     
-    // Add event handler for collisions
     body.addEventListener('collide', callback);
-    
-    // Add to world
     this.world.addBody(body);
     return body;
   }
