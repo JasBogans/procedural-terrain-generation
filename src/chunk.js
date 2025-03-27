@@ -18,8 +18,8 @@ import {
 	metalness: 0.1
   });
   
-  // Very minimal terrain curvature
-  const CURVATURE = 10000;
+  // Very minimal terrain curvature - reduced for mountain focus
+  const CURVATURE = 15000;
   
   export default class Chunk extends Mesh {
 	treesPositionArray = [];
@@ -125,7 +125,7 @@ import {
 		  `
 		);
   
-		// Color assignment based on height and position - matching the natural look
+		// Color assignment based on height and position - matching mountain terrain
 		shader.fragmentShader = shader.fragmentShader.replace(
 		  '#include <color_fragment>',
 		  `
@@ -138,11 +138,16 @@ import {
 		  float pathDist = abs((wPosition.x * pathZ - wPosition.z * pathX)) * 0.02;
 		  float pathMask = min(1.0, pathDist * 8.0);
 		  
-		  // Colors from reference image
-		  vec3 mountainTop = vec3(0.85, 0.8, 0.7);     // Tan mountain top
-		  vec3 mountainMid = vec3(0.75, 0.7, 0.5);     // Mid mountain
-		  vec3 grassColor = vec3(0.55, 0.75, 0.3);     // Bright grass green
-		  vec3 pathColor = vec3(0.85, 0.75, 0.55);     // Sandy path
+		  // Distance from center for mountain effect
+		  float distFromCenter = length(wPosition.xz) * 0.002;
+		  
+		  // Enhanced colors for better appearance
+		  vec3 snowTop = vec3(0.95, 0.95, 0.98);      // Snow caps
+		  vec3 mountainTop = vec3(0.85, 0.8, 0.7);    // Tan mountain top
+		  vec3 mountainMid = vec3(0.6, 0.55, 0.4);    // Darker mid mountain 
+		  vec3 grassColor = vec3(0.45, 0.62, 0.25);   // Rich grass green
+		  vec3 lowerGrassColor = vec3(0.5, 0.65, 0.3); // Lighter grass for lower areas
+		  vec3 pathColor = vec3(0.85, 0.75, 0.55);    // Sandy path
 		  
 		  // Choose color based on height and path
 		  vec3 terrainColor;
@@ -151,13 +156,18 @@ import {
 			// Path color with slight variation
 			terrainColor = pathColor;
 		  } 
-		  else if (height > 25.0) {
-			// Mountain top
-			terrainColor = mountainTop;
+		  else if (height > 45.0) {
+			// Snow caps on the highest peaks
+			terrainColor = snowTop;
+		  }
+		  else if (height > 30.0) {
+			// Mountain top - blend to snow
+			float blend = smoothstep(30.0, 45.0, height);
+			terrainColor = mix(mountainTop, snowTop, blend);
 		  } 
 		  else if (height > 15.0) {
 			// Mountain sides - blend between top and mid
-			float blend = smoothstep(15.0, 25.0, height);
+			float blend = smoothstep(15.0, 30.0, height);
 			terrainColor = mix(mountainMid, mountainTop, blend);
 		  }
 		  else if (height > 5.0) {
@@ -166,8 +176,12 @@ import {
 			terrainColor = mix(grassColor, mountainMid, blend);
 		  }
 		  else {
-			// Grass areas
-			terrainColor = grassColor;
+			// Grass areas with variation based on height for visual interest
+			float blend = smoothstep(0.0, 5.0, height);
+			terrainColor = mix(lowerGrassColor, grassColor, blend);
+			
+			// Add some subtle noise variation to grass
+			terrainColor *= (0.9 + 0.2 * sin(wPosition.x * 0.1) * sin(wPosition.z * 0.1));
 		  }
 		  
 		  // Assign the color
@@ -232,7 +246,7 @@ import {
 	  posAttr.needsUpdate = true;
 	  this.geometry.computeVertexNormals();
   
-	  // Generate trees only for close chunks
+	  // Generate trees only for close chunks and not on high mountain
 	  if (!this.trees && this.LOD <= 1) {
 		this.generateTrees();
 	  }
@@ -268,8 +282,11 @@ import {
 	  const pathDist = Math.abs((x * pathZ - z * pathX)) * 0.02;
 	  const pathMask = Math.min(1.0, pathDist * 8.0);
 	  
-	  // Trees only on grass/mountain sides, not on path, not too high
-	  if (pathMask > 0.6 && y > 3 && y < 20 && Math.random() < 0.5) {
+	  // Distance from center - fewer trees near top of mountain
+	  const distFromCenter = Math.sqrt(x * x + z * z);
+	  
+	  // Trees only on lower slopes and grass, not on path, not too high
+	  if (pathMask > 0.6 && y > 3 && y < 18 && Math.random() < 0.5 && distFromCenter > 60) {
 		this.treesPositionArray.push(x - this.position.x, y, z - this.position.z);
 		this.treesCount++;
 	  }

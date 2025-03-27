@@ -10,8 +10,10 @@ export default class ChunkManager {
   chunkKeys = [];
   lastChunkVisited = null;
   pool = [];
-  maxDistance = isMobile ? 3 : 4; // Reduced distance for better performance
+  // Extend distance for better mountain coverage (more chunks)
+  maxDistance = isMobile ? 4 : 5; 
   activePhysicsChunks = new Set();
+  mountainCenter = new Vector2(0, 0); // Center of the mountain
 
   constructor(chunkSize, target, params, scene, uniforms, assets, physicsWorld = null) {
     this.params = params;
@@ -32,19 +34,44 @@ export default class ChunkManager {
   }
 
   init() {
-    const [i, j] = this.getCoordsByTarget();
+    // Start by loading chunks around mountain center
     this.updateChunks();
+    
+    // Initialize by ensuring the mountain peak is generated
+    // This chunk will contain the starting point for the ball
+    this.createChunk(0, 0, 0); // Create center chunk with mountain peak with highest detail
+    
+    // Create surrounding chunks for the descent area
+    for (let i = -1; i <= 1; i++) {
+      for (let j = -1; j <= 1; j++) {
+        if (i === 0 && j === 0) continue; // Skip center chunk (already created)
+        this.createChunk(i, j, 0); // Create surrounding chunks with highest detail
+      }
+    }
   }
 
   getLODbyCoords(k, w) {
     const [i, j] = this.getCoordsByTarget();
-    // Faster LOD falloff for stylized terrain
-    return Math.floor(_V.set(k - i, w - j).length() * 0.9);
+    
+    // Distance from mountain center (more important than player position)
+    const distFromMountain = _V.set(k, w).length();
+    // Distance from player
+    const distFromPlayer = _V.set(k - i, w - j).length();
+    
+    // Calculate LOD based on both distances
+    // Higher weight for distance from player, but still consider mountain center
+    return Math.floor((distFromPlayer * 0.7 + distFromMountain * 0.3) * 0.9);
   }
 
   isOutOfRange(k, w, [i, j]) {
-    const distance = _V.set(k - i, w - j).length();
-    return distance > this.maxDistance;
+    const distanceFromPlayer = _V.set(k - i, w - j).length();
+    const distanceFromMountain = _V.set(k, w).length(); // Distance from mountain center
+    
+    // Keep chunks that are either close to player or close to mountain
+    if (distanceFromPlayer <= this.maxDistance) return false;
+    if (distanceFromMountain <= this.maxDistance - 1) return false;
+    
+    return true;
   }
 
   createChunk(i, j, LOD) {
@@ -67,8 +94,8 @@ export default class ChunkManager {
       this.chunkKeys.push(`${i}|${j}`);
       this.scene.add(chunk);
       
-      // Add physics for close chunks
-      if (this.physicsWorld && LOD <= 1) {
+      // Add physics for close chunks or center mountain chunks
+      if (this.physicsWorld && (LOD <= 1 || (_V.set(i, j).length() <= 2))) {
         this.physicsWorld.addHeightfieldFromChunk(chunk);
         this.activePhysicsChunks.add(`${i}|${j}`);
       }
@@ -109,6 +136,7 @@ export default class ChunkManager {
     }
 
     // Queue chunk updates in a radius around the player
+    // Increased range to ensure good coverage of the mountain
     for (let k = i - this.maxDistance + 1; k <= i + this.maxDistance + 1; k++) {
       for (
         let w = j - this.maxDistance + 1;
@@ -120,6 +148,10 @@ export default class ChunkManager {
 
         if (this.isOutOfRange(k, w, [i, j])) {
           if (chunk) {
+            // Skip removing central mountain chunks - always keep them
+            const distFromCenter = Math.sqrt(k*k + w*w);
+            if (distFromCenter <= 2) continue;
+            
             // Remove physics before disposing chunk
             if (this.activePhysicsChunks.has(key) && this.physicsWorld) {
               this.physicsWorld.removeHeightfield(chunk);
@@ -169,6 +201,11 @@ export default class ChunkManager {
   }
 
   disposeChunk(chunk, key) {
+    // Don't dispose the center chunks with the mountain
+    if (chunk.coords && Math.sqrt(chunk.coords[0]**2 + chunk.coords[1]**2) <= 1) {
+      return;
+    }
+    
     chunk.dispose();
     this.chunks[key] = undefined;
     this.chunkKeys = this.chunkKeys.filter(k => k !== key);
@@ -207,5 +244,32 @@ export default class ChunkManager {
     const j = Math.floor(z / this.chunkSize);
 
     return [i, j];
+  }
+  
+  // Find the highest point on the mountain for placing the ball
+  findMountainPeak() {
+    // Look for the mountain peak in the center chunks
+    const centerChunk = this.chunks['0|0'];
+    if (!centerChunk || !centerChunk.geometry) {
+      // Return a reasonable default height if chunk isn't loaded yet
+      return new Vector3(0, 55, 0);
+    }
+    
+    // Search through the geometry to find the highest point
+    const positions = centerChunk.geometry.getAttribute('position');
+    let maxHeight = 0;
+    let peakX = 0;
+    let peakZ = 0;
+    
+    for (let i = 0; i < positions.count; i++) {
+      const y = positions.getY(i);
+      if (y > maxHeight) {
+        maxHeight = y;
+        peakX = positions.getX(i) + centerChunk.position.x;
+        peakZ = positions.getZ(i) + centerChunk.position.z;
+      }
+    }
+    
+    return new Vector3(peakX, maxHeight + 3, peakZ); // Add small offset for starting height
   }
 }

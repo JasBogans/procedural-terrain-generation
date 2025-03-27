@@ -29,14 +29,18 @@ export function getHeight(x, z, noises, params) {
     h += increment * amplitude;
   }
 
-  // Central mountain with sloping sides
+  // Calculate distance from center - used for the mountain shape
   const distFromCenter = Math.sqrt(x * x + z * z) * 0.002;
-  const mountainMassif = Math.max(0, 1 - distFromCenter * 1.2);
   
-  // Apply mountain shape
-  h *= (mountainMassif * 1.5) + 0.2;
+  // Create a steeper central mountain with defined slope
+  // Stronger mountain influence for pronounced central peak
+  const mountainMassif = Math.max(0, 1 - distFromCenter * 0.9);
+  const mountainHeight = 60; // Higher peak
   
-  // Create a coherent path from the edge to the mountain
+  // Apply heightmap mountain base with height that drops as we go further from center
+  h = (h * 0.3) + (mountainHeight * mountainMassif * mountainMassif);
+  
+  // Create a coherent path from the edge to the mountain peak
   // Path direction vector (normalized)
   const pathX = 0.7071; // 45 degrees path
   const pathZ = 0.7071;
@@ -47,11 +51,13 @@ export function getHeight(x, z, noises, params) {
   // Path mask - closer to path center = lower value
   const pathMask = Math.min(1, pathDist * 8);
   
-  // Reduce height along path, more pronounced closer to path center
-  h *= pathMask;
-  
-  // Add some small bumps for visual interest along path edges
+  // Create a sloped path down the mountain
   if (pathMask < 0.5) {
+    // Reduce height along path, but maintain downward slope
+    // The 0.8 factor keeps some height for the slope rather than flattening completely
+    h *= 0.8 + (0.2 * pathMask);
+    
+    // Add some small bumps for visual interest along path edges
     const edgeBumps = noises[0](x * 0.1, z * 0.1) * 0.8 * pathMask;
     h += edgeBumps;
   }
